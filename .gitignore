@@ -1,10 +1,10 @@
-# venv
 venv/
 __pycache__/
 *.pyc
 *.pyo
 *.zip
 *.log
+*.csv
 .env
 .DS_Store
 .ipynb_checkpoints/

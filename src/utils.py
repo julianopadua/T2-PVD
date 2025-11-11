@@ -23,7 +23,9 @@ from pandas.api.types import is_numeric_dtype
 def load_config() -> Tuple[Dict[str, str], dict]:
     """
     Carrega config.yaml do diretório raiz e resolve caminhos relativos.
-    Acrescenta data_preprocessed (novo) ao dict de paths.
+    Acrescenta:
+      - data_preprocessed: pasta de saídas consolidadas
+      - data_parquet_yearly: cache anual (parquet por ano)
     """
     script_dir = os.path.dirname(os.path.abspath(__file__))
     config_path = os.path.join(script_dir, "..", "config.yaml")
@@ -38,10 +40,12 @@ def load_config() -> Tuple[Dict[str, str], dict]:
         "images": os.path.join(script_dir, config["paths"]["images"]),
         "report": os.path.join(script_dir, config["paths"]["report"]),
         "addons": os.path.join(script_dir, config["paths"]["addons"]),
-        # Novo subpath dedicado ao pré-processamento intermediário:
-        "data_preprocessed": os.path.join(script_dir, "..","data", "preprocessed"),
+        "data_preprocessed": os.path.join(script_dir, "..", "data", "preprocessed"),
+        # NOVO: cache anual parquet
+        "data_parquet_yearly": os.path.join(script_dir, "..", "data", "preprocessed", "yearly"),
     }
     ensure_dir(paths["data_preprocessed"])
+    ensure_dir(paths["data_parquet_yearly"])
     return paths, config
 
 
@@ -112,6 +116,34 @@ def log_call(fn):
             raise
     return wrapper
 
+# ============================
+# Cache anual em Parquet
+# ============================
+
+def _yearly_parquet_path(paths: Dict[str, str], year: int) -> str:
+    fname = f"cnpq_pagamentos_{year}.parquet"
+    return os.path.join(paths["data_parquet_yearly"], fname)
+
+def save_year_parquet(df: pd.DataFrame, year: int, paths: Dict[str, str]) -> str:
+    """
+    Salva df anual normalizado/coagido em Parquet, para reuso.
+    """
+    p = _yearly_parquet_path(paths, year)
+    ensure_dir(os.path.dirname(p))
+    df.to_parquet(p, index=False)
+    get_logger().info("year_parquet_saved | year=%s | path=%s | shape=%s", year, p, df.shape)
+    return p
+
+def load_year_parquet_if_exists(year: int, paths: Dict[str, str]) -> Optional[pd.DataFrame]:
+    """
+    Se existir o Parquet anual, carrega e retorna; senão, None.
+    """
+    p = _yearly_parquet_path(paths, year)
+    if os.path.exists(p):
+        df = pd.read_parquet(p)
+        get_logger().info("year_parquet_loaded | year=%s | path=%s | shape=%s", year, p, df.shape)
+        return df
+    return None
 
 
 # ==============================================
@@ -507,26 +539,50 @@ def coerce_types(df: pd.DataFrame) -> pd.DataFrame:
 
 def load_and_standardize_all(paths: Dict[str, str]) -> Dict[str, pd.DataFrame]:
     """
-    Carrega, normaliza e padroniza os três dataframes (2022/2023/2024).
-    Retorna dict com dfs padronizados.
+    Para cada ano:
+      1) tenta carregar o Parquet anual do cache;
+      2) se não existir, lê CSV bruto, normaliza, coage tipos e salva o Parquet anual;
+    Retorna dict {"2022": df22, "2023": df23, "2024": df24}.
     """
     found = discover_raw_files(paths["data_raw"])
 
-    df22 = read_2022(found["y2022"])
-    df22 = normalize_columns(df22, MAP_2022)
+    out: Dict[str, pd.DataFrame] = {}
 
-    df23 = read_2023(found["y2023"])
-    df23 = normalize_columns(df23, MAP_2023)
+    # 2022
+    df22_cached = load_year_parquet_if_exists(2022, paths)
+    if df22_cached is not None:
+        out["2022"] = df22_cached
+    else:
+        df22 = read_2022(found["y2022"])
+        df22 = normalize_columns(df22, MAP_2022)
+        df22 = coerce_types(df22)
+        save_year_parquet(df22, 2022, paths)
+        out["2022"] = df22
 
-    df24 = read_2024(found["y2024"])
-    df24 = normalize_columns(df24, MAP_2024)
+    # 2023
+    df23_cached = load_year_parquet_if_exists(2023, paths)
+    if df23_cached is not None:
+        out["2023"] = df23_cached
+    else:
+        df23 = read_2023(found["y2023"])
+        df23 = normalize_columns(df23, MAP_2023)
+        df23 = coerce_types(df23)
+        save_year_parquet(df23, 2023, paths)
+        out["2023"] = df23
 
-    # Coerção de tipos em cada um
-    df22 = coerce_types(df22)
-    df23 = coerce_types(df23)
-    df24 = coerce_types(df24)
+    # 2024
+    df24_cached = load_year_parquet_if_exists(2024, paths)
+    if df24_cached is not None:
+        out["2024"] = df24_cached
+    else:
+        df24 = read_2024(found["y2024"])
+        df24 = normalize_columns(df24, MAP_2024)
+        df24 = coerce_types(df24)
+        save_year_parquet(df24, 2024, paths)
+        out["2024"] = df24
 
-    return {"2022": df22, "2023": df23, "2024": df24}
+    return out
+
 
 def _common_cols_across(dfs: Dict[str, pd.DataFrame]) -> List[str]:
     """
@@ -578,26 +634,41 @@ def unify_pagamentos(dfs: Dict[str, pd.DataFrame]) -> pd.DataFrame:
 
 
 @log_call
-def save_preprocessed(df: pd.DataFrame, paths: Dict[str, str]) -> Dict[str, str]:
+def save_preprocessed(
+    df: pd.DataFrame, 
+    paths: Dict[str, str], 
+    write_csv: bool | None = None
+) -> Dict[str, str]:
+    """
+    Salva o dataset unificado. Por padrão salva somente Parquet.
+    CSV só é escrito se:
+      - write_csv=True, OU
+      - variável de ambiente WRITE_CSV == "1".
+    """
     ensure_dir(paths["data_preprocessed"])
     base = os.path.join(paths["data_preprocessed"], "cnpq_pagamentos_2022_2024")
 
-    # Reordena: ANO_REFERENCIA primeiro (se existir)
+    # Garante ANO_REFERENCIA primeiro
     cols = df.columns.tolist()
     if "ANO_REFERENCIA" in cols:
         cols = ["ANO_REFERENCIA"] + [c for c in cols if c != "ANO_REFERENCIA"]
         df = df[cols]
 
     out_parquet = f"{base}.parquet"
-    out_csv = f"{base}.csv"
+    df.to_parquet(out_parquet, index=False)
 
-    try:
-        df.to_parquet(out_parquet, index=False)
-    except Exception:
-        out_parquet = ""
+    should_write_csv = (
+        (write_csv is True) or
+        (write_csv is None and os.getenv("WRITE_CSV", "0") == "1")
+    )
+    out_csv = ""
+    if should_write_csv:
+        out_csv = f"{base}.csv"
+        df.to_csv(out_csv, index=False, encoding="utf-8")
 
-    df.to_csv(out_csv, index=False, encoding="utf-8")
+    get_logger().info("save_preprocessed | parquet=%s | csv=%s | shape=%s", out_parquet, out_csv, df.shape)
     return {"parquet": out_parquet, "csv": out_csv}
+
 
 
 
@@ -630,7 +701,7 @@ def load_preprocessed_dataset(paths: Optional[Dict[str, str]] = None) -> pd.Data
         paths, _ = load_config()
     base = Path(paths["data_preprocessed"]) / "cnpq_pagamentos_2022_2024"
     pq_path = base.with_suffix(".parquet")
-    csv_path = base.with_suffix(".csv")
+    csv_path = base.with_suffix(".csv")  # opcional
 
     lg = get_logger()
     lg.info("load_preprocessed | pq=%s | csv=%s", pq_path, csv_path)
@@ -638,25 +709,28 @@ def load_preprocessed_dataset(paths: Optional[Dict[str, str]] = None) -> pd.Data
     if pq_path.exists():
         lg.info("Loading from Parquet: %s", pq_path)
         df = pd.read_parquet(pq_path)
-    elif csv_path.exists():
-        lg.info("Loading from CSV: %s", csv_path)
-        # Força dtypes para colunas que podem ser mal interpretadas
+        lg.info("loaded_df | shape=%s | cols=%s", df.shape, list(df.columns))
+        return df
+
+    if csv_path.exists():
+        lg.info("Loading from CSV (fallback): %s", csv_path)
         df = pd.read_csv(
-            csv_path, 
+            csv_path,
             dtype={
                 "ANO_REFERENCIA": "Int64",
                 "PROCESSO": "string",
-                "CPF_HASH": "string"
+                "CPF_HASH": "string",
             }
         )
-    else:
-        lg.error("file_not_found | pq=%s | csv=%s", pq_path, csv_path)
-        raise FileNotFoundError(
-            f"Arquivo não encontrado: {pq_path.name} nem {csv_path.name} em {paths['data_preprocessed']}"
-        )
+        lg.info("loaded_df | shape=%s | cols=%s", df.shape, list(df.columns))
+        return df
 
-    lg.info("loaded_df | shape=%s | cols=%s", df.shape, list(df.columns))
-    return df
+    lg.error("file_not_found | pq=%s | csv=%s", pq_path, csv_path)
+    raise FileNotFoundError(
+        "Dataset pré-processado não encontrado. "
+        "Rode a pipeline: python -m src.build_dataset"
+    )
+
 
 
 @log_call

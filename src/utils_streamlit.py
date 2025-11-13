@@ -260,96 +260,142 @@ def agg_total_invest_by_area(df: pd.DataFrame, year: Optional[int] = None,
 def agg_invest_by_category(df: pd.DataFrame, year: Optional[int] = None,
                            how: Literal["sum","per_beneficiary_mean","per_process_mean"]="sum") -> pd.DataFrame:
     """
-    Investimento por categoria de bolsa (CATEGORIA_NIVEL).
+    Investimento por categoria de bolsa (MODALIDADE).
     - how="sum": soma total (clássico)
     - how="per_beneficiary_mean": média por beneficiário (pondera pela quantidade de bolsistas)
     - how="per_process_mean": média por processo (pondera pela quantidade de processos)
-    Retorna: ['CATEGORIA_NIVEL','valor','n_base'] onde 'valor' é a métrica escolhida.
+    Retorna: ['MODALIDADE','valor','n_base'] onde 'valor' é a métrica escolhida.
     """
     df = _ensure_numeric_valor(df)
     df = _filter_year(df, year)
 
-    if "CATEGORIA_NIVEL" not in df.columns:
-        raise ValueError("Coluna 'CATEGORIA_NIVEL' ausente.")
+    if "MODALIDADE" not in df.columns:
+        raise ValueError("Coluna 'MODALIDADE' ausente.")
 
     if how == "sum":
-        out = (df.dropna(subset=["CATEGORIA_NIVEL"])
-                 .groupby("CATEGORIA_NIVEL", as_index=False)
-                 .agg(valor=("VALOR_PAGO","sum"),
-                      n_base=("VALOR_PAGO","size")))
+        out = (df.dropna(subset=["MODALIDADE"])
+                 .groupby("MODALIDADE", as_index=False)
+                 .agg(valor_em_reais=("VALOR_PAGO","sum"),
+                      n_unicos=("VALOR_PAGO","size")))
     elif how == "per_beneficiary_mean":
         # média do total por beneficiário, por categoria
-        if "CPF_HASH" not in df.columns:
-            raise ValueError("Métrica 'per_beneficiary_mean' requer 'CPF_HASH'.")
-        tmp = (df.dropna(subset=["CPF_HASH","CATEGORIA_NIVEL"])
-                 .groupby(["CATEGORIA_NIVEL","CPF_HASH"], as_index=False)["VALOR_PAGO"].sum())
-        out = (tmp.groupby("CATEGORIA_NIVEL", as_index=False)
-                 .agg(valor=("VALOR_PAGO","mean"),
-                      n_base=("CPF_HASH","nunique")))
+        if "BENEFICIARIO" not in df.columns:
+            raise ValueError("Métrica 'per_beneficiary_mean' requer 'BENEFICIARIO'.")
+        censored_names = ["XXXX", "XXX XXX XXX"]
+        df_tmp = df[~df["BENEFICIARIO"].isin(censored_names)]
+        tmp = (df_tmp.dropna(subset=["BENEFICIARIO","MODALIDADE"])
+                 .groupby(["MODALIDADE","BENEFICIARIO"], as_index=False)["VALOR_PAGO"].sum())
+        out = (tmp.groupby("MODALIDADE", as_index=False)
+                 .agg(valor_em_reais=("VALOR_PAGO","mean"),
+                      n_unicos=("BENEFICIARIO","nunique")))
     else:  # per_process_mean
         if "PROCESSO" not in df.columns:
             raise ValueError("Métrica 'per_process_mean' requer 'PROCESSO'.")
-        tmp = (df.dropna(subset=["PROCESSO","CATEGORIA_NIVEL"])
-                 .groupby(["CATEGORIA_NIVEL","PROCESSO"], as_index=False)["VALOR_PAGO"].sum())
-        out = (tmp.groupby("CATEGORIA_NIVEL", as_index=False)
-                 .agg(valor=("VALOR_PAGO","mean"),
-                      n_base=("PROCESSO","nunique")))
+        tmp = (df.dropna(subset=["PROCESSO","MODALIDADE"])
+                 .groupby(["MODALIDADE","PROCESSO"], as_index=False)["VALOR_PAGO"].sum())
+        out = (tmp.groupby("MODALIDADE", as_index=False)
+                 .agg(valor_em_reais=("VALOR_PAGO","mean"),
+                      n_unicos=("PROCESSO","nunique")))
 
-    out["valor"] = out["valor"].astype(float)
-    return out.sort_values("valor", ascending=False, kind="mergesort").reset_index(drop=True)
+    out["valor_em_reais"] = out["valor_em_reais"].astype(float)
+    return out.sort_values("valor_em_reais", ascending=False, kind="mergesort").reset_index(drop=True)
 
 
 @log_call
-def agg_box_data_by_category(df: pd.DataFrame, year: Optional[int] = None) -> pd.DataFrame:
+def agg_box_data_by_category(df: pd.DataFrame, year: Optional[int] = None, category: Optional[str] = None) -> pd.DataFrame:
     """
-    Retorna dados prontos para boxplot: VALOR_PAGO x CATEGORIA_NIVEL (com filtro de ano).
+    Retorna dados prontos para boxplot: VALOR_PAGO x MODALIDADE (com filtro de ano).
     """
     df = _ensure_numeric_valor(df)
     df = _filter_year(df, year)
-    return df.dropna(subset=["VALOR_PAGO","CATEGORIA_NIVEL"]).copy()
+
+    if category is not None:
+        df = df[df["MODALIDADE"] == category]
+
+    selected_cols = ["ANO_REFERENCIA", "PROCESSO", "MODALIDADE", "VALOR_PAGO"]
+    df_clean = df[selected_cols].dropna(subset=["VALOR_PAGO","MODALIDADE"]).copy()
+    # df_avg = df_clean.groupby("MODALIDADE", as_index=False).agg({"VALOR_PAGO" : "mean"})
+    # df_avg.rename(columns={"VALOR_PAGO":"VALOR_MEDIO"}, inplace=True)
+
+
+    return df_clean
 
 
 @log_call
-def agg_box_data_by_area(df: pd.DataFrame, year: Optional[int] = None,
-                         level: Literal["GRANDE_AREA","AREA","SUBAREA"]="AREA") -> pd.DataFrame:
+def agg_box_data_by_area(
+        df: pd.DataFrame,
+        year: Optional[int] = None, 
+        level: Literal["GRANDE_AREA","AREA","SUBAREA"]="AREA",
+        level_val : Optional[str] = None
+    ) -> pd.DataFrame:
     """
     Dados para boxplot: VALOR_PAGO x área/subárea/grande área.
     """
     df = _ensure_numeric_valor(df)
     df = _filter_year(df, year)
+
     if level not in df.columns:
         raise ValueError(f"Coluna '{level}' ausente.")
-    return df.dropna(subset=["VALOR_PAGO", level]).copy()
+    
+    if level_val is not None:
+        df = df[df[level] == level_val]
+    
+    selected_columns = ["ANO_REFERENCIA", "PROCESSO", level, "VALOR_PAGO"]
+    df_clean = df[selected_columns].dropna(subset=["VALOR_PAGO", level]).copy()
+    # df_avg = df_clean.groupby(level, as_index=False).agg({"VALOR_PAGO" : "mean"})
+    # df_avg.rename(columns={"VALOR_PAGO":"VALOR_MEDIO"}, inplace=True)
+
+    return df_clean
 
 
 @log_call
-def agg_box_data_by_area_and_category(df: pd.DataFrame, year: Optional[int] = None,
-                                      level: Literal["GRANDE_AREA","AREA","SUBAREA"]="AREA") -> pd.DataFrame:
+def agg_box_data_by_area_and_category(
+        df: pd.DataFrame,
+        year: Optional[int] = None,
+        level: Literal["GRANDE_AREA","AREA","SUBAREA"]="AREA",
+        level_val : Optional[str] = None,
+        category : Optional[str] = None
+    ) -> pd.DataFrame:
     """
-    Dados para boxplot combinado: VALOR_PAGO x área(subárea) color/facet por CATEGORIA_NIVEL.
+    Dados para boxplot combinado: VALOR_PAGO x área(subárea) color/facet por MODALIDADE.
     """
     df = _ensure_numeric_valor(df)
     df = _filter_year(df, year)
-    required = [level, "CATEGORIA_NIVEL"]
+    required = [level, "MODALIDADE"]
+
     for c in required:
         if c not in df.columns:
             raise ValueError(f"Coluna '{c}' ausente.")
-    return df.dropna(subset=["VALOR_PAGO", level, "CATEGORIA_NIVEL"]).copy()
+        
+    if level_val is not None:
+        if category is not None:
+            df = df[(df[level] == level_val) & (df["MODALIDADE"] == category)]
+        else:
+            df = df[df[level] == level_val]
+    elif category is not None:
+        df = df[df["MODALIDADE"] == category]
+
+    selected_columns = ["ANO_REFERENCIA", "PROCESSO", "MODALIDADE", level, "VALOR_PAGO"]
+    df_clean = df[selected_columns].dropna(subset=["VALOR_PAGO", level, "MODALIDADE"]).copy()
+    # df_avg = df_clean.groupby([level, "MODALIDADE"], as_index=False).agg({"VALOR_PAGO" : "mean"})
+    # df_avg.rename(columns={"VALOR_PAGO":"VALOR_MEDIO"}, inplace=True)
+    
+    return df_clean
 
 
 @log_call
 def agg_time_mean_by_category(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Progressão temporal: média de VALOR_PAGO por ANO_REFERENCIA e CATEGORIA_NIVEL.
-    Retorna: ['ANO_REFERENCIA','CATEGORIA_NIVEL','media_valor'] com anos ordenados.
+    Progressão temporal: média de VALOR_PAGO por ANO_REFERENCIA e MODALIDADE.
+    Retorna: ['ANO_REFERENCIA','MODALIDADE','media_valor'] com anos ordenados.
     """
     df = _ensure_numeric_valor(df).copy()
     df["ANO_REFERENCIA"] = pd.to_numeric(df["ANO_REFERENCIA"], errors="coerce").astype("Int64")
-    out = (df.dropna(subset=["ANO_REFERENCIA","CATEGORIA_NIVEL"])
-             .groupby(["ANO_REFERENCIA","CATEGORIA_NIVEL"], as_index=False)
+    out = (df.dropna(subset=["ANO_REFERENCIA","MODALIDADE"])
+             .groupby(["ANO_REFERENCIA","MODALIDADE"], as_index=False)
              .agg(media_valor=("VALOR_PAGO","mean")))
     out["media_valor"] = out["media_valor"].astype(float)
-    return out.sort_values(["ANO_REFERENCIA","CATEGORIA_NIVEL"], kind="mergesort").reset_index(drop=True)
+    return out.sort_values(["ANO_REFERENCIA","MODALIDADE"], kind="mergesort").reset_index(drop=True)
 
 
 # =============================================
@@ -421,17 +467,20 @@ def fig_bar_total_by_area(df_agg: pd.DataFrame, year: Optional[int],
 
 
 @log_call
-def fig_bar_category(df_agg: pd.DataFrame, year: Optional[int], metric_label: str) -> "px.Figure":
+def fig_bar_category(df_agg: pd.DataFrame, year: Optional[int], metric_label: str, top_n: Optional[int] = 20) -> "px.Figure":
     """
-    Mostra soma / média ponderada por categoria, dependendo do df_agg passado (coluna 'valor').
+    Mostra soma / média ponderada por categoria, dependendo do df_agg passado (coluna 'valor_em_reais').
     """
     title = f"Investimento por Categoria de Bolsa ({metric_label})" + (f" — {year}" if year else "")
+    data = df_agg.copy()
+    if top_n is not None and len(data) > top_n:
+        data = data.nlargest(top_n, "valor_em_reais")
     fig = px.bar(
-        df_agg,
-        x="CATEGORIA_NIVEL",
-        y="valor",
-        text="valor",
-        labels={"CATEGORIA_NIVEL":"Categoria/Nível","valor":metric_label},
+        data,
+        x="MODALIDADE",
+        y="valor_em_reais",
+        text="valor_em_reais",
+        labels={"MODALIDADE":"Modalidade","valor_em_reais":metric_label},
         title=title
     )
     fig.update_traces(texttemplate="R$ %{y:,.2f}", marker_color="#118AB2")
@@ -440,23 +489,38 @@ def fig_bar_category(df_agg: pd.DataFrame, year: Optional[int], metric_label: st
 
 
 @log_call
-def fig_box_by_category(df_box: pd.DataFrame, year: Optional[int]) -> "px.Figure":
-    title = f"Distribuição (Boxplot) do Valor Pago por Categoria" + (f" — {year}" if year else "")
+def fig_box_by_category(df_box: pd.DataFrame, year: Optional[int] = None, modalidade: Optional[str] = None) -> "px.Figure":
+    title = f"Distribuição de valores: {modalidade if modalidade is not None else 'Todas as modalidades'} ({year if year is not None else 'Todos os anos'})" 
     fig = px.box(
         df_box,
-        x="CATEGORIA_NIVEL",
+        x="MODALIDADE",
         y="VALOR_PAGO",
         points="outliers",
-        labels={"CATEGORIA_NIVEL":"Categoria/Nível","VALOR_PAGO":"Valor pago (R$)"},
+        labels={"MODALIDADE":"Modalidade","VALOR_PAGO":"Valor pago (R$)"},
         title=title
     )
+
+    # for modalidade_atual in df_box["MODALIDADE"].unique():
+    #     df_mod = df_box[df_box["MODALIDADE"] == modalidade_atual]
+    #     media = df_mod["VALOR_MEDIO"].mean()
+        
+    #     fig.add_trace(px.Scatter(
+    #         x=[modalidade_atual],
+    #         y=[media],
+    #         mode='markers',
+    #         marker=dict(color='red', size=12, symbol='diamond'),
+    #         name=f'Média: R$ {media:,.2f}',
+    #         showlegend=True
+    #     ))
+    
     fig.update_layout(yaxis=dict(tickformat="R$,.2f"), xaxis_tickangle=-30, template="plotly_white")
+    fig.update_layout(height=500)
     return fig
 
 
 @log_call
-def fig_box_by_area(df_box: pd.DataFrame, year: Optional[int], level: str = "AREA") -> "px.Figure":
-    title = f"Distribuição (Boxplot) do Valor Pago por {level.replace('_',' ').title()}" + (f" — {year}" if year else "")
+def fig_box_by_area(df_box: pd.DataFrame, year: Optional[int], level: str = "AREA", level_val: Optional[str] = None) -> "px.Figure":
+    title = f"Distribuição de valores: {level_val if level_val is not None else level} ({year if year is not None else 'Todos os anos'})" 
     fig = px.box(
         df_box,
         x=level,
@@ -465,7 +529,22 @@ def fig_box_by_area(df_box: pd.DataFrame, year: Optional[int], level: str = "ARE
         labels={level: level.replace("_"," ").title(), "VALOR_PAGO":"Valor pago (R$)"},
         title=title
     )
+
+    # for area_atual in df_box[level].unique():
+    #     df_area = df_box[df_box[level] == area_atual]
+    #     media = df_area["VALOR_MEDIO"].mean()
+        
+    #     fig.add_trace(px.Scatter(
+    #         x=[area_atual],
+    #         y=[media],
+    #         mode='markers',
+    #         marker=dict(color='red', size=12, symbol='diamond'),
+    #         name=f'Média: R$ {media:,.2f}',
+    #         showlegend=True
+    #     ))
+    
     fig.update_layout(yaxis=dict(tickformat="R$,.2f"), xaxis_tickangle=-30, template="plotly_white")
+    fig.update_layout(height=500)
     return fig
 
 
@@ -479,7 +558,7 @@ def fig_box_by_area_and_category(df_box: pd.DataFrame, year: Optional[int],
     if facet:
         fig = px.box(
             df_box, x=level, y="VALOR_PAGO",
-            facet_col="CATEGORIA_NIVEL", facet_col_wrap=3,
+            facet_col="MODALIDADE", facet_col_wrap=3,
             points=False, color_discrete_sequence=px.colors.qualitative.Set2,
             labels={level: level.replace("_"," ").title(), "VALOR_PAGO":"Valor pago (R$)"},
             title=title
@@ -487,9 +566,9 @@ def fig_box_by_area_and_category(df_box: pd.DataFrame, year: Optional[int],
     else:
         fig = px.box(
             df_box, x=level, y="VALOR_PAGO",
-            color="CATEGORIA_NIVEL", points="outliers",
+            color="MODALIDADE", points="outliers",
             color_discrete_sequence=px.colors.qualitative.Set2,
-            labels={level: level.replace("_"," ").title(), "VALOR_PAGO":"Valor pago (R$)","CATEGORIA_NIVEL":"Categoria/Nível"},
+            labels={level: level.replace("_"," ").title(), "VALOR_PAGO":"Valor pago (R$)","MODALIDADE":"Modalidade"},
             title=title
         )
     fig.update_layout(yaxis=dict(tickformat="R$,.2f"), xaxis_tickangle=-30, template="plotly_white")
@@ -506,16 +585,16 @@ def fig_time_mean_by_category(df_time: pd.DataFrame, kind: Literal["line","area"
     title = "Progressão da média de Valor Pago por Categoria ao longo dos anos"
     if kind == "line":
         fig = px.line(
-            df_time, x="ANO_REFERENCIA", y="media_valor", color="CATEGORIA_NIVEL",
+            df_time, x="ANO_REFERENCIA", y="media_valor", color="MODALIDADE",
             markers=True,
-            labels={"ANO_REFERENCIA":"Ano","media_valor":"Média do valor (R$)","CATEGORIA_NIVEL":"Categoria/Nível"},
+            labels={"ANO_REFERENCIA":"Ano","media_valor":"Média do valor (R$)","MODALIDADE":"Modalidade"},
             title=title
         )
     else:
         fig = px.area(
-            df_time, x="ANO_REFERENCIA", y="media_valor", color="CATEGORIA_NIVEL",
+            df_time, x="ANO_REFERENCIA", y="media_valor", color="MODALIDADE",
             groupnorm=None,
-            labels={"ANO_REFERENCIA":"Ano","media_valor":"Média do valor (R$)","CATEGORIA_NIVEL":"Categoria/Nível"},
+            labels={"ANO_REFERENCIA":"Ano","media_valor":"Média do valor (R$)","MODALIDADE":"Modalidade"},
             title=title
         )
     fig.update_layout(yaxis=dict(tickformat="R$,.2f"), template="plotly_white")

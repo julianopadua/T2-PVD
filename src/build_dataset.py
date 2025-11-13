@@ -1,5 +1,5 @@
 # src/build_dataset.py
-from utils import build_cnpq_pagamentos_preprocessed, get_logger
+from .utils import build_cnpq_pagamentos_preprocessed, get_logger
 
 if __name__ == "__main__":
     lg = get_logger()

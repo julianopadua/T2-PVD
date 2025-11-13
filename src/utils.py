@@ -440,36 +440,35 @@ def parse_brazilian_currency_to_float(s: pd.Series) -> pd.Series:
         return s.astype(float)
     
     s_str = s.astype("string").str.strip()
-    
-    # Remove aspas que podem envolver o valor (ex: "R$ 400,00")
     s_str = s_str.str.strip('"')
     
     # Remove símbolos de moeda (R$ ou $) e espaços em branco
-    s_str = s_str.str.replace(r"R\$|\$", "", regex=True).str.strip()
+    s_str = s_str.str[:-3]
+    s_str = s_str.str.replace(r"R\$|\$|\,|\.", "", regex=True).str.strip()
     
-    # Se ainda tivermos '.' e ',', a vírgula é o decimal (formato BR)
-    # Ex: "1.234,56"
-    is_br_format = s_str.str.contains(r"\.", regex=False) & s_str.str.contains(r",", regex=False)
+    # # Se ainda tivermos '.' e ',', a vírgula é o decimal (formato BR)
+    # # Ex: "1.234,56"
+    # is_br_format = s_str.str.contains(r"\.", regex=False) & s_str.str.contains(r",", regex=False)
     
-    # Se tiver só vírgula, ela é o decimal (formato BR simplificado)
-    # Ex: "600,00"
-    is_simple_br = s_str.str.contains(r",", regex=False) & ~s_str.str.contains(r"\.", regex=False)
+    # # Se tiver só vírgula, ela é o decimal (formato BR simplificado)
+    # # Ex: "600,00"
+    # is_simple_br = s_str.str.contains(r",", regex=False) & ~s_str.str.contains(r"\.", regex=False)
 
-    # Aplica a limpeza
+    # # Aplica a limpeza
     
-    # Formato BRL (1.234,56 -> 1234.56)
-    s_br = s_str.where(is_br_format | is_simple_br)
-    s_br = s_br.str.replace(r"\.", "", regex=False).str.replace(r",", ".", regex=False)
+    # # Formato BRL (1.234,56 -> 1234.56)
+    # s_br = s_str.where(is_br_format | is_simple_br)
+    # s_br = s_br.str.replace(r"\.", "", regex=False).str.replace(r",", ".", regex=False)
 
-    # O que sobrar (formato "300.0" ou "1500")
-    s_other = s_str.where(~(is_br_format | is_simple_br))
-    # Apenas remove vírgulas de milhar (se houver, ex: 1,500)
-    s_other = s_other.str.replace(r",", "", regex=False)
+    # # O que sobrar (formato "300.0" ou "1500")
+    # s_other = s_str.where(~(is_br_format | is_simple_br))
+    # # Apenas remove vírgulas de milhar (se houver, ex: 1,500)
+    # s_other = s_other.str.replace(r",", "", regex=False)
 
-    # Combina
-    s_final = s_br.fillna(s_other)
+    # # Combina
+    # s_final = s_br.fillna(s_other)
 
-    return pd.to_numeric(s_final, errors="coerce")
+    return pd.to_numeric(s_str, errors="coerce")
 
 
 @log_call
